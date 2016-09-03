@@ -435,6 +435,7 @@ class Commands:
         str(tx) #this serializes
         if not unsigned:
             self.wallet.sign_transaction(tx, self._password)
+ 
         return tx
 
     @command('wp')
@@ -763,6 +764,41 @@ class Commands:
                         abandon_txid=txid)
         return tx.as_dict()
 
+    @command('wp')
+    def abandon(self, txid, nOut, return_addr=None, tx_fee=None, unsigned=False):
+        # create a single new address to abandon into if return_addr was not specified 
+        if return_addr is None:
+            return_addr = self.wallet.create_new_address()
+        i = self.wallet.get_spendable_claimtrietx_coin(txid,nOut)
+        inputs = [i]
+        txout_value = i['value']
+        # create outputs
+        if tx_fee is not None:         
+            return_value = txout_value - int(COIN*tx_fee)
+        # calculate fee if necessary 
+        else:   
+            outputs = [(TYPE_ADDRESS,return_addr,txout_value)]  
+            dummy_tx = Transaction.from_io(inputs, outputs)
+            # fee per kb will default to RECOMMENDED_FEE, which is 50000 
+            # relay fee will default to 5000 
+            # fee for max(relay_fee, size is fee_per_kb * esimated_size) 
+            # will be roughly 10,000 deweys (0.0001 lbc), standard abandon should be about 200 bytes
+            # this is assuming config is not set to dynamic, which in case it will get fees from lbrycrd's
+            # fee estimation algorithm 
+            size = dummy_tx.estimated_size()
+            fee = Transaction.fee_for_size(self.wallet.relayfee(),self.wallet.fee_per_kb(self.config),size)
+            if fee > txout_value: 
+                raise BaseException('transaction fee exceeds amount to abandon') 
+            return_value = txout_value - fee 
+                        
+        # create transaction 
+        outputs = [(TYPE_ADDRESS,return_addr,return_value)]  
+        tx = Transaction.from_io(inputs,outputs)         
+        self.wallet.sign_transaction(tx, self._password)
+        self.wallet.add_transaction(Hash(str(tx)).encode('hex'), tx)
+        return self.network.synchronous_get(('blockchain.transaction.broadcast', [str(tx)]))
+
+
 
 param_descriptions = {
     'privkey': 'Private key. Type \'?\' to get a prompt.',
@@ -811,6 +847,7 @@ command_options = {
     'expired':     (None, "--expired",     "Show only expired requests."),
     'paid':        (None, "--paid",        "Show only paid requests."),
     'exclude_claimtrietx':(None,"--exclude_claimtrietx", "Exclude claimtrie transactions"),
+    'return_addr': ("-c", "--return_addr", "Return address where amounts in abandoned claimtrie transactions are returned."),
 }
 
 
